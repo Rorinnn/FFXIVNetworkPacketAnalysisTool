@@ -1,4 +1,4 @@
-using Dalamud.Interface.Windowing;
+﻿using Dalamud.Interface.Windowing;
 using FFXIVNetworkPacketAnalysisTool.Utils;
 using System;
 using System.Collections.Generic;
@@ -10,17 +10,20 @@ using Dalamud.Bindings.ImGui;
 
 namespace FFXIVNetworkPacketAnalysisTool.Windows;
 
+/// <summary>
+/// 数据包重发窗口，支持编辑字段值后重新发送。
+/// </summary>
 public class PacketResendWindow : Window, IDisposable
 {
-    private Plugin Plugin;
-    private PacketInfo OriginalPacket;
-    private Type? StructType;
-    private byte[] EditableData;
-    private Dictionary<string, object> FieldValues = new Dictionary<string, object>();
-    private Dictionary<string, string> FieldInputs = new Dictionary<string, string>();
-    private const int PACKET_HEADER_SIZE = 0x20;
+    private Plugin plugin;
+    private PacketInfo originalPacket;
+    private Type? structType;
+    private byte[] editableData;
+    private Dictionary<string, object> fieldValues = new Dictionary<string, object>();
+    private Dictionary<string, string> fieldInputs = new Dictionary<string, string>();
+    private const int PacketHeaderSize = 0x20;
 
-    public PacketResendWindow(Plugin plugin, PacketInfo packet, Type? structType)
+    public PacketResendWindow(Plugin plugin, PacketInfo packet, Type? structType) // 初始化重发窗口，复制原始包数据用于编辑。
         : base($"重发包 - {packet.OpcodeName}###ResendPacket{packet.Timestamp.Ticks}")
     {
         SizeConstraints = new WindowSizeConstraints
@@ -29,16 +32,14 @@ public class PacketResendWindow : Window, IDisposable
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
         };
 
-        Plugin = plugin;
-        OriginalPacket = packet;
-        StructType = structType;
+        this.plugin = plugin;
+        originalPacket = packet;
+        this.structType = structType;
 
-        // 复制原始数据
-        EditableData = new byte[packet.RawData.Length];
-        Array.Copy(packet.RawData, EditableData, packet.RawData.Length);
+        editableData = new byte[packet.RawData.Length];
+        Array.Copy(packet.RawData, editableData, packet.RawData.Length);
 
-        // 初始化字段值
-        if (StructType != null)
+        if (structType != null)
         {
             InitializeFieldValues();
         }
@@ -46,46 +47,42 @@ public class PacketResendWindow : Window, IDisposable
         IsOpen = true;
     }
 
-    public void Dispose()
+    public void Dispose() // 从窗口系统中移除此窗口。
     {
-        // 从窗口系统中移除
-        Plugin.WindowSystem.RemoveWindow(this);
+        plugin.WindowSystem.RemoveWindow(this);
     }
 
-    public override void OnClose()
+    public override void OnClose() // 窗口关闭时自动释放资源。
     {
         base.OnClose();
-        // 窗口关闭时自动清理
         Dispose();
     }
 
     private void InitializeFieldValues()
     {
-        if (StructType == null) return;
+        if (structType == null) return;
 
-        var fields = StructType.GetFields(BindingFlags.Public | BindingFlags.Instance)
+        var fields = structType.GetFields(BindingFlags.Public | BindingFlags.Instance)
             .Where(f => f.GetCustomAttribute<FieldOffsetAttribute>() != null)
             .ToList();
-
-        int headerOffset = OriginalPacket.Direction == PacketDirection.Send ? PACKET_HEADER_SIZE : PACKET_HEADER_SIZE;
 
         foreach (var field in fields)
         {
             var offsetAttr = field.GetCustomAttribute<FieldOffsetAttribute>();
             if (offsetAttr == null) continue;
 
-            int offset = offsetAttr.Value + headerOffset;
+            int offset = offsetAttr.Value + PacketHeaderSize;
 
             try
             {
-                var value = ReadFieldValue(field.FieldType, EditableData, offset);
-                FieldValues[field.Name] = value;
-                FieldInputs[field.Name] = FormatValueForInput(value, field.FieldType);
+                var value = ReadFieldValue(field.FieldType, editableData, offset);
+                fieldValues[field.Name] = value;
+                fieldInputs[field.Name] = FormatValueForInput(value, field.FieldType);
             }
             catch
             {
-                FieldValues[field.Name] = GetDefaultValue(field.FieldType);
-                FieldInputs[field.Name] = "";
+                fieldValues[field.Name] = GetDefaultValue(field.FieldType);
+                fieldInputs[field.Name] = "";
             }
         }
     }
@@ -123,14 +120,14 @@ public class PacketResendWindow : Window, IDisposable
         return 0;
     }
 
-    public override void Draw()
+    public override void Draw() // 绘制包重发窗口 UI（字段编辑器 + 重发按钮）。
     {
-        ImGui.Text($"原始包: {OriginalPacket.OpcodeName} (0x{OriginalPacket.Opcode:X4})");
-        ImGui.Text($"方向: {OriginalPacket.DirectionString}");
-        ImGui.Text($"时间: {OriginalPacket.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
+        ImGui.Text($"原始包: {originalPacket.OpcodeName} (0x{originalPacket.Opcode:X4})");
+        ImGui.Text($"方向: {originalPacket.DirectionString}");
+        ImGui.Text($"时间: {originalPacket.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
         ImGui.Separator();
 
-        if (StructType == null)
+        if (structType == null)
         {
             ImGui.TextColored(new Vector4(1f, 0.7f, 0.3f, 1f), "未找到对应的结构体定义，无法编辑字段");
             ImGui.TextWrapped("只能重发原始数据。");
@@ -157,13 +154,13 @@ public class PacketResendWindow : Window, IDisposable
 
     private void DrawFieldEditor()
     {
-        if (StructType == null) return;
+        if (structType == null) return;
 
-        ImGui.TextColored(new Vector4(0.4f, 0.8f, 0.4f, 1f), $"结构体: {StructType.Name}");
+        ImGui.TextColored(new Vector4(0.4f, 0.8f, 0.4f, 1f), $"结构体: {structType.Name}");
         ImGui.Text("编辑字段值后点击\"应用并重发\"");
         ImGui.Separator();
 
-        var fields = StructType.GetFields(BindingFlags.Public | BindingFlags.Instance)
+        var fields = structType.GetFields(BindingFlags.Public | BindingFlags.Instance)
             .Where(f => f.GetCustomAttribute<FieldOffsetAttribute>() != null)
             .OrderBy(f => f.GetCustomAttribute<FieldOffsetAttribute>()!.Value)
             .ToList();
@@ -219,14 +216,14 @@ public class PacketResendWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.Button("重置为原始值"))
         {
-            Array.Copy(OriginalPacket.RawData, EditableData, OriginalPacket.RawData.Length);
+            Array.Copy(originalPacket.RawData, editableData, originalPacket.RawData.Length);
             InitializeFieldValues();
         }
     }
 
     private void DrawFieldInput(FieldInfo field)
     {
-        if (!FieldInputs.ContainsKey(field.Name))
+        if (!fieldInputs.ContainsKey(field.Name))
             return;
 
         ImGui.PushID(field.Name);
@@ -234,7 +231,7 @@ public class PacketResendWindow : Window, IDisposable
         if (field.FieldType.IsEnum)
         {
             // 枚举类型：使用下拉框
-            var currentValue = FieldValues[field.Name];
+            var currentValue = fieldValues[field.Name];
             var enumValues = Enum.GetValues(field.FieldType);
             var enumNames = Enum.GetNames(field.FieldType);
 
@@ -253,8 +250,8 @@ public class PacketResendWindow : Window, IDisposable
 
                     if (ImGui.Selectable(displayText, isSelected))
                     {
-                        FieldValues[field.Name] = enumValue!;
-                        FieldInputs[field.Name] = enumValue!.ToString()!;
+                        fieldValues[field.Name] = enumValue!;
+                        fieldInputs[field.Name] = enumValue!.ToString()!;
                     }
 
                     if (isSelected)
@@ -267,23 +264,23 @@ public class PacketResendWindow : Window, IDisposable
         else if (field.FieldType == typeof(Vector3))
         {
             // Vector3 类型：使用三个浮点数输入框
-            var vec3 = (Vector3)FieldValues[field.Name];
+            var vec3 = (Vector3)fieldValues[field.Name];
             ImGui.SetNextItemWidth(100);
             if (ImGui.DragFloat("##x", ref vec3.X, 0.1f, float.MinValue, float.MaxValue, "X: %.3f"))
             {
-                FieldValues[field.Name] = vec3;
+                fieldValues[field.Name] = vec3;
             }
             ImGui.SameLine();
             ImGui.SetNextItemWidth(100);
             if (ImGui.DragFloat("##y", ref vec3.Y, 0.1f, float.MinValue, float.MaxValue, "Y: %.3f"))
             {
-                FieldValues[field.Name] = vec3;
+                fieldValues[field.Name] = vec3;
             }
             ImGui.SameLine();
             ImGui.SetNextItemWidth(100);
             if (ImGui.DragFloat("##z", ref vec3.Z, 0.1f, float.MinValue, float.MaxValue, "Z: %.3f"))
             {
-                FieldValues[field.Name] = vec3;
+                fieldValues[field.Name] = vec3;
             }
         }
         else if (IsFixedArray(field.FieldType))
@@ -291,33 +288,32 @@ public class PacketResendWindow : Window, IDisposable
             string lowerFieldName = field.Name.ToLower();
 
             // 处理需要坐标转换的 Pos 字段（从 ushort 转换为 Vector3）
-            if (lowerFieldName.Contains("pos") && StructType != null)
+            if (lowerFieldName.Contains("pos") && structType != null)
             {
                 // 根据结构体类型判断是否需要坐标转换
-                string structName = StructType.Name;
+                string structName = structType.Name;
                 bool needsWebToRawConversion = structName == "DOWN_ActorMove" ||
                                              structName == "DOWN_ActorCast" ||
                                              structName.Contains("DOWN_AoeEffect");
 
                 if (needsWebToRawConversion)
                 {
-                    // 尝试从 FieldValues 获取存储的 Vector3，如果没有则从原始数据计算
+                    // 尝试从 fieldValues 获取存储的 Vector3，如果没有则从原始数据计算
                     Vector3 currentPos;
-                    if (FieldValues.TryGetValue(field.Name, out var posValue) && posValue is Vector3)
+                    if (fieldValues.TryGetValue(field.Name, out var posValue) && posValue is Vector3)
                     {
                         currentPos = (Vector3)posValue;
                     }
                     else
                     {
-                        // 从原始数据读取并转换坐标
-                        try
+                        try // 从原始数据读取并转换坐标
                         {
                             var offsetAttr = field.GetCustomAttribute<FieldOffsetAttribute>();
                             if (offsetAttr != null)
                             {
-                                int offset = offsetAttr.Value + PACKET_HEADER_SIZE;
-                                currentPos = ReadWebPosFromData(EditableData, offset);
-                                FieldValues[field.Name] = currentPos;
+                                int offset = offsetAttr.Value + PacketHeaderSize;
+                                currentPos = ReadWebPosFromData(editableData, offset);
+                                fieldValues[field.Name] = currentPos;
                             }
                             else
                             {
@@ -334,19 +330,19 @@ public class PacketResendWindow : Window, IDisposable
                     ImGui.SetNextItemWidth(100);
                     if (ImGui.DragFloat("##x", ref currentPos.X, 0.1f, float.MinValue, float.MaxValue, "X: %.3f"))
                     {
-                        FieldValues[field.Name] = currentPos;
+                        fieldValues[field.Name] = currentPos;
                     }
                     ImGui.SameLine();
                     ImGui.SetNextItemWidth(100);
                     if (ImGui.DragFloat("##y", ref currentPos.Y, 0.1f, float.MinValue, float.MaxValue, "Y: %.3f"))
                     {
-                        FieldValues[field.Name] = currentPos;
+                        fieldValues[field.Name] = currentPos;
                     }
                     ImGui.SameLine();
                     ImGui.SetNextItemWidth(100);
                     if (ImGui.DragFloat("##z", ref currentPos.Z, 0.1f, float.MinValue, float.MaxValue, "Z: %.3f"))
                     {
-                        FieldValues[field.Name] = currentPos;
+                        fieldValues[field.Name] = currentPos;
                     }
                 }
                 else
@@ -364,10 +360,10 @@ public class PacketResendWindow : Window, IDisposable
         {
             // 基本类型：使用输入框
             ImGui.SetNextItemWidth(-1);
-            var input = FieldInputs[field.Name];
+            var input = fieldInputs[field.Name];
             if (ImGui.InputText("##input", ref input, 64))
             {
-                FieldInputs[field.Name] = input;
+                fieldInputs[field.Name] = input;
             }
         }
 
@@ -387,20 +383,18 @@ public class PacketResendWindow : Window, IDisposable
 
     private bool ApplyFieldChanges()
     {
-        if (StructType == null) return false;
+        if (structType == null) return false;
 
-        var fields = StructType.GetFields(BindingFlags.Public | BindingFlags.Instance)
+        var fields = structType.GetFields(BindingFlags.Public | BindingFlags.Instance)
             .Where(f => f.GetCustomAttribute<FieldOffsetAttribute>() != null)
             .ToList();
-
-        int headerOffset = OriginalPacket.Direction == PacketDirection.Send ? PACKET_HEADER_SIZE : PACKET_HEADER_SIZE;
 
         foreach (var field in fields)
         {
             var offsetAttr = field.GetCustomAttribute<FieldOffsetAttribute>();
             if (offsetAttr == null) continue;
 
-            int offset = offsetAttr.Value + headerOffset;
+            int offset = offsetAttr.Value + PacketHeaderSize;
 
             try
             {
@@ -411,17 +405,17 @@ public class PacketResendWindow : Window, IDisposable
                     string lowerFieldName = field.Name.ToLower();
 
                     // 处理需要坐标转换的 Pos 字段（从 ushort 转换为 Vector3）
-                    if (lowerFieldName.Contains("pos") && StructType != null)
+                    if (lowerFieldName.Contains("pos") && structType != null)
                     {
-                        string structName = StructType.Name;
+                        string structName = structType.Name;
                         bool needsWebToRawConversion = structName == "DOWN_ActorMove" ||
                                                      structName == "DOWN_ActorCast" ||
                                                      structName.Contains("DOWN_AoeEffect");
 
-                        if (needsWebToRawConversion && FieldValues.TryGetValue(field.Name, out var posValue) && posValue is Vector3)
+                        if (needsWebToRawConversion && fieldValues.TryGetValue(field.Name, out var posValue) && posValue is Vector3)
                         {
                             // 将 Vector3 写回为 fixed ushort Pos[3]
-                            WriteWebPosToData(EditableData, offset, (Vector3)posValue);
+                            WriteWebPosToData(editableData, offset, (Vector3)posValue);
                             value = posValue;
                         }
                         else
@@ -437,7 +431,7 @@ public class PacketResendWindow : Window, IDisposable
                 else if (field.FieldType.IsEnum)
                 {
                     // 尝试从手动输入解析，如果失败则使用当前选中值
-                    var input = FieldInputs[field.Name];
+                    var input = fieldInputs[field.Name];
                     if (!string.IsNullOrWhiteSpace(input))
                     {
                         var underlyingType = Enum.GetUnderlyingType(field.FieldType);
@@ -446,23 +440,23 @@ public class PacketResendWindow : Window, IDisposable
                     }
                     else
                     {
-                        value = FieldValues[field.Name];
+                        value = fieldValues[field.Name];
                     }
                 }
                 else if (IsComplexType(field.FieldType))
                 {
-                    // Vector3 等复杂类型直接从 FieldValues 获取（已在 UI 中更新）
-                    value = FieldValues[field.Name];
-                    WriteFieldValue(field.FieldType, EditableData, offset, value);
+                    // Vector3 等复杂类型直接从 fieldValues 获取（已在 UI 中更新）
+                    value = fieldValues[field.Name];
+                    WriteFieldValue(field.FieldType, editableData, offset, value);
                 }
                 else
                 {
-                    var input = FieldInputs[field.Name];
+                    var input = fieldInputs[field.Name];
                     value = ParseNumericValue(input, field.FieldType);
-                    WriteFieldValue(field.FieldType, EditableData, offset, value);
+                    WriteFieldValue(field.FieldType, editableData, offset, value);
                 }
 
-                FieldValues[field.Name] = value;
+                fieldValues[field.Name] = value;
             }
             catch (Exception ex)
             {
@@ -513,25 +507,25 @@ public class PacketResendWindow : Window, IDisposable
         try
         {
             // 注意：只支持发包（客户端->服务器）
-            if (OriginalPacket.Direction != PacketDirection.Send)
+            if (originalPacket.Direction != PacketDirection.Send)
             {
                 Plugin.Log.Warning("只能重发发包（客户端->服务器）");
                 return;
             }
 
-            // 直接使用反射调用底层 SendPacket 委托
-            // SendPacket 的签名: bool SendPacket(NetworkModuleProxy* module, byte* packet, uint a3, uint a4)
-            var sendPacketField = typeof(NetRe).GetField("SendPacket", BindingFlags.NonPublic | BindingFlags.Static);
+            // 直接使用反射调用底层 ManualSend 委托
+            // ManualSend 签名: bool ManualSend(NetworkModuleProxy* module, byte* packet, uint a3, uint a4)
+            var sendPacketField = typeof(NetRe).GetField("manualSend", BindingFlags.NonPublic | BindingFlags.Static);
             if (sendPacketField == null)
             {
-                Plugin.Log.Error("无法找到 SendPacket 委托");
+                Plugin.Log.Error("无法找到 ManualSend 委托");
                 return;
             }
 
             var sendPacketDelegate = sendPacketField.GetValue(null);
             if (sendPacketDelegate == null)
             {
-                Plugin.Log.Error("SendPacket 委托未初始化");
+                Plugin.Log.Error("ManualSend 委托未初始化");
                 return;
             }
 
@@ -546,8 +540,8 @@ public class PacketResendWindow : Window, IDisposable
             var networkModule = frameworkInstance->NetworkModuleProxy;
 
             // 准备要发送的数据
-            // EditableData 包含完整的包（包括包头0x20字节），直接使用
-            fixed (byte* packetPtr = EditableData)
+            // editableData 包含完整的包（包括包头0x20字节），直接使用
+            fixed (byte* packetPtr = editableData)
             {
                 // 调用 SendPacket
                 var invokeMethod = sendPacketDelegate.GetType().GetMethod("Invoke");
@@ -556,7 +550,7 @@ public class PacketResendWindow : Window, IDisposable
                     var parameters = new object[] { (IntPtr)networkModule, (IntPtr)packetPtr, (uint)0, (uint)0x114514 };
                     var result = invokeMethod.Invoke(sendPacketDelegate, parameters);
 
-                    Plugin.Log.Info($"已重发包: {OriginalPacket.OpcodeName} (0x{OriginalPacket.Opcode:X4})");
+                    Plugin.Log.Info($"已重发包: {originalPacket.OpcodeName} (0x{originalPacket.Opcode:X4})");
 
                     // 关闭窗口
                     IsOpen = false;

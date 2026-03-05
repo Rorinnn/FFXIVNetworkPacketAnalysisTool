@@ -6,56 +6,53 @@ using Serilog;
 
 namespace FFXIVNetworkPacketAnalysisTool.Utils;
 
-
 /// <summary>
-/// 在线opcode没有记录的 扫描sig加进入吧
+/// 通过内存签名扫描获取联网数据中未收录的 opcode。
+/// 大部分 UP opcode 已通过 OmenTools UpstreamOpcode 在 OnlineOpcode 中处理，此处仅保留未覆盖的额外 sig。
+/// 在字段上标注 OpcodeAttribute 即可自动注册。
 /// </summary>
 public static class LocalOpcode
 {
-    // 潜水艇TP的
-    [Opcode(name:"UP_DiveStart",offset:0x4)]
-    private static readonly CompSig DiveStartOpcodeBaseSig =
-        new("C7 44 24 ?? ?? ?? ?? ?? 48 C7 44 24 ?? ?? ?? ?? ?? E8 ?? ?? ?? ?? B0");
-
-    public static void SetLocalUpOpcode(Dictionary<int, string> opcodes)
+    public static void SetLocalUpOpcode(Dictionary<int, string> opcodes) // 扫描所有标注了 OpcodeAttribute 的 CompSig 字段，将结果写入 opcodes。
     {
-        var type = typeof(LocalOpcode);
-        foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+
+        foreach (var field in typeof(LocalOpcode).GetFields(flags))
         {
             if (field.FieldType != typeof(CompSig)) continue;
-            var value = field.GetValue(null);
-            if (value is CompSig sig)
-            {
-                var attr = field.GetCustomAttribute<OpcodeAttribute>();
-                if (attr != null)
-                {
-                    var sanSig = SanSig(sig,attr.Offset);
-                    if (sanSig ==0)continue;
-                    if (!opcodes.TryGetValue(sanSig, out var opcode))
-                    {
-                        Log.Debug($"添加不到，尝试添加{sanSig},{attr.Name}");
-                        opcodes.TryAdd(sanSig,attr.Name);
-                    }
-                }
-            }
+            if (field.GetValue(null) is not CompSig sig) continue;
+
+            var attr = field.GetCustomAttribute<OpcodeAttribute>();
+            if (attr is null) continue;
+
+            var scanned = ScanSig(sig, attr.Offset);
+            if (scanned == 0) continue;
+
+            if (opcodes.TryAdd(scanned, attr.Name))
+                Log.Debug($"[LocalOpcode] 已添加 sig opcode: {scanned} → {attr.Name}");
         }
     }
 
-    private static int SanSig(CompSig sig ,int offset)
+    private static int ScanSig(CompSig sig, int offset)
     {
-        var data = sig.ScanText();
-        return data == nint.Zero ? 0 : MemoryHelper.Read<int>(data + offset);
+        var addr = sig.ScanText();
+        if (addr == nint.Zero) return 0;
+        try { return MemoryHelper.Read<int>(addr + offset); }
+        catch (Exception ex)
+        {
+            Log.Warning($"[LocalOpcode] 读取 sig 偏移失败 offset=0x{offset:X}: {ex.Message}");
+            return 0;
+        }
     }
 }
-[AttributeUsage(AttributeTargets.Field)]
-public class OpcodeAttribute: Attribute
-{
-    public string Name { get; }
-    public int Offset { get; }
 
-    public OpcodeAttribute(string name, int offset)
-    {
-        Name = name;
-        Offset = offset;
-    }
+/// <summary>
+/// 标注在 CompSig 字段上，用于声明该签名对应的 Opcode 名称和读取偏移。
+/// </summary>
+[AttributeUsage(AttributeTargets.Field)]
+public sealed class OpcodeAttribute(string name, int offset) : Attribute
+{
+    public string Name { get; } = name; // Opcode 名称（例如 "UP_EventStart"）。
+
+    public int Offset { get; } = offset; // 签名匹配后读取 Opcode 值的字节偏移。
 }

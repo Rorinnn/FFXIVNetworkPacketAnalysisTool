@@ -1,0 +1,3 @@
+[submodule "OmenTools"]
+	path = OmenTools
+	url = git@github.com:AtmoOmen/OmenTools.git

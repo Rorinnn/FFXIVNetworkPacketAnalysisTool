@@ -1,6 +1,8 @@
 # FFXIV 网络包结构说明
 
-## 收包 (DOWN) 包头结构
+## 包头结构
+
+### 收包 (DOWN)
 
 ```
 偏移   大小   类型     说明
@@ -15,7 +17,7 @@
 0x18   ...   bytes    包体数据
 ```
 
-## 发包 (UP) 包头结构
+### 发包 (UP)
 
 ```
 偏移   大小   类型     说明
@@ -27,85 +29,52 @@
 0x0C   ...   bytes    包体数据
 ```
 
-## 当前实现 - 基于结构体定义的包长度获取 ✨
+## 包长度获取
 
-### 收包长度读取（智能方式）
-- **方法**: `GetPacketLengthFromStruct(string opcodeName)`
-- **位置**: `NetManager.cs` 第 227-287 行
-- **工作流程**:
-  1. 根据 OpcodeName 查找对应的结构体定义
-  2. 如果找到结构体，读取 `[StructLayout(LayoutKind.Explicit, Size = ...)]` 中的 `Size` 属性
-  3. 如果未找到结构体或 OpcodeName 为 "Unknown"，返回默认值 512 字节
-  4. 使用 `ConcurrentDictionary` 缓存已查找的结果，避免重复反射
+### 收包
 
-**优势**:
-- ✅ 每个包都能获得精确的长度
-- ✅ 只需定义结构体，无需硬编码每个包的长度
-- ✅ 自动识别新添加的结构体定义
-- ✅ 高性能缓存机制
+`NetManager.GetPacketLengthFromStruct(opcodeName)` 根据 Opcode 名称在程序集中查找同名结构体，读取 `[StructLayout(Size = ...)]` 作为包体长度。未找到结构体或 Opcode 为 `Unknown` 时返回默认值 512 字节。查询结果由 `packetLengthCache`（`ConcurrentDictionary`）缓存。
 
-### 发包长度读取
-- **位置**: `NetManager.cs` 第 109 行
-- **偏移**: `0x08` (packet + 8)
-- **读取方式**: `*(uint*)(packet + 8)`
+### 发包
 
-## 如何为包定义结构体
+直接从包数据偏移 `0x08` 处读取：`*(uint*)(packet + 8)`。
 
-在 `PacketStructures/ExampleStructs.cs` 或其他文件中定义结构体：
+## 定义数据包结构体
+
+收包结构体放入 `PacketStructures/Down/`，发包放入 `PacketStructures/Up/`：
 
 ```csharp
-[StructLayout(LayoutKind.Explicit, Size = 0x290)]  // 👈 这个 Size 会被用作包长度！
+using System.Runtime.InteropServices;
+
+namespace FFXIVNetworkPacketAnalysisTool.PacketStructures;
+
+// Size 会被 GetPacketLengthFromStruct 用作收包长度
+[StructLayout(LayoutKind.Explicit, Size = 0x290)]
 public unsafe struct DOWN_NpcSpawn
 {
     [FieldOffset(0x10)] public ulong MainTarget;
     [FieldOffset(0x40)] public uint DataID;
     [FieldOffset(0x44)] public uint OwnerID;
-    // ... 其他字段
 }
 ```
 
-**重要规则**:
-1. **结构体名称** 必须与 OpcodeName 完全匹配
-   - 例如: `DOWN_NpcSpawn`, `DOWN_PlayerSpawn`, `UP_ClientTrigger`
-2. **必须包含** `[StructLayout(LayoutKind.Explicit, Size = ...)]` 特性
-3. **Size 参数** 指定包的总大小（字节）
-4. 定义后会**自动被识别**，无需额外配置
+**规则**：
+1. 结构体名称必须与 Opcode 名称完全匹配（如 `DOWN_NpcSpawn`、`UP_ClientTrigger`）
+2. 必须标注 `[StructLayout(LayoutKind.Explicit, Size = ...)]`
+3. 定义后自动被识别，无需额外配置
 
-## 注意事项
+## 实现细节
 
-1. **包头偏移调整**: 在 `ReceivePacketInternalDetour` 中，`packet -= 16` 是因为原始指针指向包体，需要回退到包头起始位置
-
-2. **自动长度获取**: 系统会自动从结构体定义中获取长度，不再需要手动从包头读取
-
-3. **最大限制**: 在 `CapturePacket` 中限制最大复制 4KB 数据，防止超大包占用过多内存
-
-4. **包头结构体示例**: 如果需要定义包头结构体，可以参考：
-
-```csharp
-[StructLayout(LayoutKind.Explicit, Size = 0x20)]
-public unsafe struct FFXIVPacketHeader
-{
-    [FieldOffset(0x00)] public uint Length;        // 包总长度
-    [FieldOffset(0x04)] public uint Reserved;
-    [FieldOffset(0x08)] public ulong Timestamp;
-    [FieldOffset(0x10)] public ushort Unknown1;
-    [FieldOffset(0x12)] public ushort Opcode;
-    [FieldOffset(0x14)] public ushort Unknown2;
-    [FieldOffset(0x16)] public ushort ServerID;
-}
-```
+- **收包指针回退**：`ReceivePacketInternalDetour` 中 `packet -= 16` 是因为原始指针指向包体偏移处，需回退到包头起始位置
+- **包头跳过**：结构体解析时，收包和发包数据前均有 0x20（32）字节的包头，解析器自动跳过（`PacketHeaderSize = 0x20`）
+- **捕获大小限制**：`CapturePacket` 限制单包最大复制 4KB，防止超大包占用过多内存
 
 ## 调试技巧
 
-如果长度读取仍然不准确：
+在 `ReceivePacketInternalDetour` 中添加日志以确认包长度字段位置：
 
-1. 在 `ReceivePacketInternalDetour` 中添加日志：
 ```csharp
-Plugin.Log.Debug($"包长度: offset0={Marshal.ReadInt32((nint)packet, 0)}, " +
-                 $"offset24={Marshal.ReadInt32((nint)packet, 24)}, " +
-                 $"offset8={Marshal.ReadInt32((nint)packet, 8)}");
+Plugin.Log.Debug($"包长度: offset0={Marshal.ReadInt32((nint)packet, 0)}, "
+               + $"offset24={Marshal.ReadInt32((nint)packet, 24)}, "
+               + $"offset8={Marshal.ReadInt32((nint)packet, 8)}");
 ```
-
-2. 使用十六进制查看器检查实际包数据，确认长度字段位置
-
-3. 参考其他 FFXIV 网络插件的实现（如 Machina, FFXIVMon）
